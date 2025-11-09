@@ -2,70 +2,57 @@ name: Test and Release
 
 on:
   push:
-    branches: [ '*' ]
-    tags: ['*']
+    branches: ["*"]
+    tags: ["*"]
   pull_request:
-    branches: [ '*' ]
+    branches: ["*"]
 
 jobs:
   test:
     strategy:
       fail-fast: false
-      # https://docs.github.com/en/actions/using-jobs/using-a-matrix-for-your-jobs
       matrix:
-        python_version: ["3.8", "3.9", "3.10"]
-        # https://github.com/pytorch/pytorch/wiki/PyTorch-Versions
-        pytorch_version: ["1.8", "1.9", "1.10", "1.11", "1.12", "1.13", "2.0", "latest"]
+        python_version: ["3.9", "3.10", "3.11", "3.12"]
+        pytorch_version: ["2.6", "latest"]
         os: ["windows-latest", "ubuntu-latest"]
-        exclude:
-        - python_version: "3.10"
-          pytorch_version: "1.8"
-        - python_version: "3.10"
-          pytorch_version: "1.9"
-        - python_version: "3.10"
-          pytorch_version: "1.10"
         include:
-        # https://pytorch.org/get-started/previous-versions/
-        - pytorch_version: "1.8"
-          pytorch_pip_libraries: "torch==1.8.1+cpu torchvision==0.9.1+cpu torchaudio==0.8.1 -f https://download.pytorch.org/whl/torch_stable.html"
-        - pytorch_version: "1.9"
-          pytorch_pip_libraries: "torch==1.9.1+cpu torchvision==0.10.1+cpu torchaudio==0.9.1 -f https://download.pytorch.org/whl/torch_stable.html"
-        - pytorch_version: "1.10"
-          pytorch_pip_libraries: "torch==1.10.1+cpu torchvision==0.11.2+cpu torchaudio==0.10.1 -f https://download.pytorch.org/whl/cpu/torch_stable.html"
-        - pytorch_version: "1.11"
-          pytorch_pip_libraries: "torch==1.11.0+cpu torchvision==0.12.0+cpu torchaudio==0.11.0 --extra-index-url https://download.pytorch.org/whl/cpu"
-        - pytorch_version: "1.12"
-          pytorch_pip_libraries: "torch==1.12.1+cpu torchvision==0.13.1+cpu torchaudio==0.12.1 --extra-index-url https://download.pytorch.org/whl/cpu"
-        - pytorch_version: "1.13"
-          pytorch_pip_libraries: "torch==1.13.1+cpu torchvision==0.14.1+cpu torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cpu"
-        - pytorch_version: "2.0"
-          pytorch_pip_libraries: "torch==2.0.0 torchvision==0.15.1"
-        - pytorch_version: "latest"
-          pytorch_pip_libraries: "torch torchvision"
+          - pytorch_version: "2.6"
+            pytorch_pip_libraries: "torch==2.6.0 torchvision==0.21.0"
+          - pytorch_version: "latest"
+            pytorch_pip_libraries: "torch torchvision"
 
     runs-on: ${{ matrix.os }}
 
     steps:
-    - name: "Disable git autoCRLF"
-      run: git config --global core.autoCRLF false
+      - name: "Disable git autoCRLF"
+        run: git config --global core.autoCRLF false
 
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python_version }}
+      - uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python_version }}
 
-    - name: Install PyTorch libraries
-      run: pip install ${{ matrix.pytorch_pip_libraries }}
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.8"
+          enable-cache: true
 
-    - name: Install libraries
-      run: pip install -e .[test]
+      - name: Install PyTorch libraries
+        run: uv pip install ${{ matrix.pytorch_pip_libraries }}
 
-    - name: Show library versions
-      run: pip freeze
+      - name: Install project and test dependencies
+        run: uv pip install -e ".[test]"
 
-    - name: Run tests
-      run: python -m unittest discover -s tests -t . -v
+      - name: Show library versions
+        run: uv pip freeze
+
+      - name: Run tests
+        run: uv run python -m unittest discover -s tests -t . -v
+
+      - name: Prune uv cache
+        run: uv cache prune --ci
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
@@ -75,57 +62,60 @@ jobs:
     permissions: write-all
 
     steps:
-    - name: "Disable git autoCRLF"
-      run: git config --global core.autoCRLF false
+      - name: "Disable git autoCRLF"
+        run: git config --global core.autoCRLF false
 
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
 
-    - name: Install dependencies
-      run: pip install -e .[package]
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.9.8"
+          enable-cache: true
 
-    - name: Create wheel package
-      run: python setup.py bdist_wheel
+      - name: Build distributions
+        run: uv build
 
-    - run: ls -alF dist
+      - run: ls -alF dist
 
-    - name: Upload all artifacts
-      uses: actions/github-script@v6
-      env:
-        ASSETS_DIR: dist
-        TAG_NAME: ${{ github.ref }}
-      with:
-        script: |
-          console.log("environment", process.versions);
-          const fs = require("fs").promises;
-          const path = require("path");
-          const { repo: { owner, repo } } = context;
-          const tag_name = process.env["TAG_NAME"];
+      - name: Upload all artifacts
+        uses: actions/github-script@v6
+        env:
+          ASSETS_DIR: dist
+          TAG_NAME: ${{ github.ref }}
+        with:
+          script: |
+            const fs = require("fs").promises;
+            const path = require("path");
+            const { repo: { owner, repo } } = context;
+            const tag_name = process.env["TAG_NAME"];
 
-          const response = await github.rest.repos.createRelease({
-            owner,
-            repo,
-            tag_name,
-            body: "Release " + tag_name,
-            draft: true,
-            prerelease: false,
-          });
+            const response = await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name,
+              body: "Release " + tag_name,
+              draft: true,
+              prerelease: false,
+            });
 
-          const release_id = response.data.id;
-          const assets_dir = process.env["ASSETS_DIR"];
+            const release_id = response.data.id;
+            const assets_dir = process.env["ASSETS_DIR"];
 
-          const files = await fs.readdir(assets_dir);
-          console.log("files", files);
-          const asset_uploaders = files.map(file => path.join(assets_dir, file)).map(file => {
-            return fs.readFile(file).then(data => {
-              return github.rest.repos.uploadReleaseAsset({
-                owner,
-                repo,
-                release_id,
-                name: path.basename(file),
-                data
+            const files = await fs.readdir(assets_dir);
+            const asset_uploaders = files.map(file => path.join(assets_dir, file)).map(file => {
+              return fs.readFile(file).then(data => {
+                return github.rest.repos.uploadReleaseAsset({
+                  owner,
+                  repo,
+                  release_id,
+                  name: path.basename(file),
+                  data
+                });
               });
             });
-          });
-          await Promise.all(asset_uploaders);
+            await Promise.all(asset_uploaders);
